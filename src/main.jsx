@@ -98,13 +98,22 @@ function App() {
       if (!audio.current) {
         const ctx = new AudioContext(),
           osc = ctx.createOscillator(),
+          sub = ctx.createOscillator(),
+          lp = ctx.createBiquadFilter(),
           gain = ctx.createGain();
         osc.type = 'sawtooth';
+        sub.type = 'sine';
+        lp.type = 'lowpass';
+        lp.frequency.value = 320;
+        lp.Q.value = 1.2;
         gain.gain.value = 0;
-        osc.connect(gain);
+        osc.connect(lp);
+        sub.connect(lp);
+        lp.connect(gain);
         gain.connect(ctx.destination);
         osc.start();
-        audio.current = { ctx, osc, gain };
+        sub.start();
+        audio.current = { ctx, osc, sub, lp, gain };
       }
       audio.current.ctx.resume();
     } catch {}
@@ -151,13 +160,13 @@ function App() {
   }
   async function connect() {
     if (sock.current?.connected) return;
-    let server = import.meta.env.VITE_SERVER_URL;
-    if (!server && ['localhost', '127.0.0.1'].includes(location.hostname))
-      server = 'http://localhost:3001';
-    if (!server)
-      throw new Error(
-        'O servidor online ainda não foi configurado. O modo treino já está disponível.',
-      );
+    // Sem VITE_SERVER_URL o cliente fala com a própria origem: um único
+    // serviço (servidor + estáticos) funciona sem configurar variável.
+    const server =
+      import.meta.env.VITE_SERVER_URL ||
+      (import.meta.env.DEV
+        ? `${location.protocol}//${location.hostname}:3001`
+        : location.origin);
     if (sock.current) sock.current.disconnect();
     let token;
     try {
@@ -166,15 +175,23 @@ function App() {
     const s = io(server, {
       auth: { token },
       reconnection: true,
-      reconnectionAttempts: 20,
+      reconnectionAttempts: Infinity,
       timeout: 60000,
     });
     sock.current = s;
     s.on('session', (data) => {
+      // Token novo com sala aberta = o servidor não restaurou nada (sala
+      // expirou ou reiniciou). Sem isso o lobby continua na tela, mas morto.
+      const stale =
+        s.auth?.token && s.auth.token !== data.token && roomRef.current;
       try {
         sessionStorage.setItem('kart-session', data.token);
       } catch {}
       s.auth = { token: data.token };
+      if (stale)
+        leaveRoom().then(() =>
+          setError('A sala expirou. Crie ou entre novamente.'),
+        );
     });
     s.on('connect', () => {
       setConnected(true);
@@ -209,7 +226,20 @@ function App() {
       );
     });
     await new Promise((resolve, reject) => {
+      // onError precisa ser removido ao conectar: se ficar pendurado, a
+      // primeira falha de reconexão (qualquer oscilação de rede) chama
+      // disconnect() e derruba o jogador da sala de vez.
+      const onError = () => {
+        clearTimeout(timer);
+        s.disconnect();
+        reject(
+          new Error(
+            'Servidor indisponível. Confira a conexão e tente novamente; a primeira abertura pode levar um minuto.',
+          ),
+        );
+      };
       const timer = setTimeout(() => {
+        s.off('connect_error', onError);
         s.disconnect();
         reject(
           new Error(
@@ -219,17 +249,10 @@ function App() {
       }, 65000);
       s.once('connect', () => {
         clearTimeout(timer);
+        s.off('connect_error', onError);
         resolve();
       });
-      s.once('connect_error', () => {
-        clearTimeout(timer);
-        s.disconnect();
-        reject(
-          new Error(
-            'Servidor indisponível. Confira a conexão e tente novamente; a primeira abertura pode levar um minuto.',
-          ),
-        );
-      });
+      s.once('connect_error', onError);
     });
   }
   async function enterRoom(kind) {
@@ -320,7 +343,11 @@ function App() {
     }
     const down = (e) => {
       if (['INPUT', 'SELECT', 'TEXTAREA'].includes(e.target.tagName)) return;
+      // Com um botão focado, Espaço/Enter pertencem ao botão: sem isso um
+      // clique de teclado no lobby também dava drift e largava a corrida.
+      const btn = e.target.tagName === 'BUTTON';
       if (
+        !btn &&
         ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space'].includes(
           e.code,
         )
@@ -330,7 +357,7 @@ function App() {
       if (!e.repeat) {
         if (e.code === 'Escape' || e.code === 'KeyP')
           actions.current.pauseGame();
-        if (e.code === 'Enter' && screenRef.current === 'menu')
+        if (e.code === 'Enter' && !btn && screenRef.current === 'menu')
           actions.current.startSolo();
         if (e.code === 'KeyE' || e.code === 'KeyX') {
           if (!online.current) activateItem(race.current);
@@ -421,15 +448,18 @@ function App() {
       }
       world.current.render(r, now / 1000, dt, localIndex);
       if (audio.current) {
-        const { ctx, osc, gain } = audio.current,
-          p = r.racers[localIndex];
-        osc.frequency.setTargetAtTime(
-          45 + p.speed * 3.4,
+        const { ctx, osc, sub, lp, gain } = audio.current,
+          p = r.racers[localIndex],
+          rpm = 42 + p.speed * 2.6;
+        osc.frequency.setTargetAtTime(rpm, ctx.currentTime, 0.12);
+        sub.frequency.setTargetAtTime(rpm * 0.5, ctx.currentTime, 0.12);
+        lp.frequency.setTargetAtTime(
+          260 + p.speed * 14,
           ctx.currentTime,
-          0.12,
+          0.18,
         );
         gain.gain.setTargetAtTime(
-          !muted.current && r.state === 'racing' ? 0.022 : 0,
+          !muted.current && r.state === 'racing' ? 0.05 : 0,
           ctx.currentTime,
           0.1,
         );

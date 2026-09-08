@@ -103,3 +103,31 @@ test('8 real clients: room capacity, host permissions, profiles, race sync, inpu
     await server.close();
   }
 });
+test('quem cai vira CPU na hora e volta a ser humano ao reconectar', async () => {
+  const server = createGameServer();
+  await new Promise((resolve) => server.http.listen(0, '127.0.0.1', resolve));
+  const url = `http://127.0.0.1:${server.http.address().port}`;
+  const clients = [];
+  try {
+    for (let i = 0; i < 2; i++) clients.push(await client(url));
+    const code = (await req(clients[0], 'create', { name: 'Host' })).room.code;
+    const amigo = await req(clients[1], 'join', { code, name: 'Amigo' });
+    for (const s of clients) await req(s, 'ready', { ready: true });
+    assert.equal((await req(clients[0], 'start')).ok, true);
+    await wait(120);
+    const race = server.rooms.get(code).race;
+    const seat = race.racers.find((p) => p.playerId === amigo.id);
+    const token = clients[1].testToken;
+    assert.equal(seat.human, true);
+    // Cai sem clicar em "sair": a corrida não pode ficar esperando esse humano.
+    clients[1].disconnect();
+    await wait(150);
+    assert.equal(seat.human, false);
+    clients.push(await client(url, token));
+    await wait(150);
+    assert.equal(seat.human, true);
+  } finally {
+    clients.forEach((s) => s.disconnect());
+    await server.close();
+  }
+});

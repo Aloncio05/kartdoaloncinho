@@ -48,7 +48,6 @@ button:active:not(:disabled) {
 }
 .app {
   height: 100dvh;
-  min-height: 700px;
   position: relative;
   overflow: hidden;
 }
@@ -988,10 +987,9 @@ kbd {
     width: 590px;
   }
 }
-@media (max-width: 700px) {
-  .app {
-    min-height: 620px;
-  }
+/* Também vale para celular deitado e tablet: lá a largura passa de 700px, mas
+   não existe mouse — sem isto o jogador fica sem nenhum botão na tela. */
+@media (max-width: 700px), (pointer: coarse) and (hover: none) {
   .topbar {
     padding: 18px;
   }

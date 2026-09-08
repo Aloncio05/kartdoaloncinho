@@ -7,6 +7,17 @@ import { Server } from 'socket.io';
 import { createRace, step, activateItem, COLORS } from './src/physics.js';
 
 export function createGameServer({ origins = [], maxRooms = 100 } = {}) {
+  // Mesma origem (servidor servindo o próprio front) sempre passa; outras
+  // origens precisam estar em CLIENT_ORIGIN.
+  const sameHost = (req) => {
+    const origin = req.headers.origin;
+    if (!origin) return true;
+    try {
+      return new URL(origin).host === req.headers.host;
+    } catch {
+      return false;
+    }
+  };
   const app = express(),
     http = createServer(app),
     io = new Server(http, {
@@ -16,11 +27,13 @@ export function createGameServer({ origins = [], maxRooms = 100 } = {}) {
       },
       maxHttpBufferSize: 8192,
       allowRequest: (req, cb) =>
-        cb(null, !req.headers.origin || origins.includes(req.headers.origin)),
+        cb(null, sameHost(req) || origins.includes(req.headers.origin)),
     });
   const rooms = new Map(),
     sessions = new Map();
   app.get('/health', (_, res) => res.json({ ok: true, rooms: rooms.size }));
+  // Serve o build do Vite quando existir, para um deploy único servir jogo e salas.
+  app.use(express.static(resolve(import.meta.dirname, 'dist')));
   function profile(p = {}) {
     return {
       name:
@@ -274,7 +287,10 @@ export function createGameServer({ origins = [], maxRooms = 100 } = {}) {
     const now = Date.now();
     for (const r of rooms.values()) {
       for (const p of r.players)
-        if (!p.socketId && now - p.disconnectedAt > 120000) {
+        // No lobby o fantasma sai rápido: senão ele segura a vaga (sala "cheia
+        // com 8"), trava o Largar e mantém o anfitrião num jogador que saiu.
+        // Em corrida a espera continua longa, para o reconnect devolver o kart.
+        if (!p.socketId && now - p.disconnectedAt > (r.race ? 120000 : 20000)) {
           for (const [token, s] of sessions)
             if (s.id === p.id) sessions.delete(token);
           r.players = r.players.filter((x) => x.id !== p.id);
@@ -292,13 +308,21 @@ export function createGameServer({ origins = [], maxRooms = 100 } = {}) {
       if (r.race) {
         const inputs = {};
         for (const p of r.race.racers) {
+          // Quem caiu vira CPU na hora e volta a ser humano ao reconectar; sem
+          // isso a corrida nunca chega em 'finished' (espera um humano que saiu).
+          if (p.playerId)
+            p.human = !!r.players.find((x) => x.id === p.playerId)?.socketId;
           const input = r.inputs.get(p.playerId);
           inputs[p.id] = input && now - input.at < 600 ? input : {};
         }
         const old = r.race.state;
         step(r.race, inputs, 1 / 60);
-        if (old !== r.race.state) broadcast(r);
-        if (tick % 3 === 0) io.to(r.code).emit('snapshot', r.race);
+        const changed = old !== r.race.state;
+        if (changed) broadcast(r);
+        // Corrida encerrada fica congelada: manda o último snapshot e para de
+        // transmitir, em vez de gastar banda a 20 Hz numa sala abandonada.
+        if (r.race.state === 'finished' ? changed : tick % 3 === 0)
+          io.to(r.code).emit('snapshot', r.race);
       }
     }
   }, 1000 / 60);

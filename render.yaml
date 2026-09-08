@@ -3,11 +3,13 @@ services:
     name: kartdoaloncinho-server
     runtime: node
     plan: free
-    buildCommand: npm ci --omit=dev --ignore-scripts
+    # --include=dev é obrigatório: NODE_ENV=production faria o npm pular o Vite.
+    buildCommand: npm ci --include=dev --ignore-scripts && npm run build
     startCommand: npm run server
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV
         value: production
+      # Opcional: só se o front for publicado em outro domínio (ex.: Vercel).
       - key: CLIENT_ORIGIN
         sync: false
