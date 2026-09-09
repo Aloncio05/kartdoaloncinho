@@ -125,6 +125,43 @@ test('online race waits for all humans and sorting preserves finish order', () =
   assert.equal(r.state, 'finished');
   assert.equal(order(r)[0].id, 0);
 });
+test('todos caindo de uma vez não encerra a corrida sozinha', () => {
+  const r = running();
+  r.online = true;
+  r.racers.forEach((p, i) => (p.human = i < 2));
+  // Os dois humanos caem: o servidor zera human até reconectarem.
+  r.racers.forEach((p) => (p.human = false));
+  step(r, {}, 1 / 60);
+  assert.equal(r.state, 'racing', 'sem humanos a corrida tem que continuar');
+  r.racers[0].human = true;
+  r.racers[0].s = LENGTH * 3 - 0.1;
+  step(r, { 0: { throttle: 1 } }, 1 / 60);
+  assert.equal(r.state, 'finished', 'com o humano de volta e na linha, encerra');
+});
+test('aviso central é de cada piloto, não da sala inteira', () => {
+  const r = running();
+  r.online = true;
+  r.racers.forEach((p) => (p.human = true));
+  // Item de um assento qualquer avisa aquele assento — antes só o assento 0
+  // recebia, então 7 dos 8 jogadores não viam o próprio item disparar.
+  r.racers[5].item = 'turbo';
+  activateItem(r, 5);
+  assert.equal(r.racers[5].notice, 'TURBO!');
+  assert(r.racers[5].noticeTime > 0);
+  assert.equal(r.racers[0].noticeTime, 0, 'o aviso não pode vazar para os outros');
+  // Drift de um jogador não pode piscar na tela dos outros.
+  const q = r.racers[1];
+  q.offset = 0;
+  q.speed = 30;
+  for (let i = 0; i < 55; i++) {
+    q.offset = 0;
+    q.yaw = 0;
+    step(r, { 1: { throttle: 1, steer: 0.3, drift: true } }, 1 / 60);
+  }
+  step(r, { 1: { throttle: 1 } }, 1 / 60);
+  assert.match(q.notice, /DRIFT|TURBO/);
+  assert.equal(r.racers[3].noticeTime, 0, 'o drift de um não avisa os outros');
+});
 test('obstáculos ficam na pista, deixam passagem e não são armadilha para a CPU', () => {
   assert(OBSTACLES.length > 20, 'a pista precisa ter obstáculos de verdade');
   for (const o of OBSTACLES) {
@@ -133,6 +170,28 @@ test('obstáculos ficam na pista, deixam passagem e não são armadilha para a C
       Math.abs(o.offset) + raio < WIDTH,
       `obstáculo em s=${o.s.toFixed(0)} vaza para fora da pista`,
     );
+    // Tem que ficar no corredor onde os karts andam. A primeira versão colocava
+    // tudo colado na grama (|offset| 6.8-8.4) e ninguém encostava: era enfeite.
+    assert(
+      Math.abs(o.offset) < 5,
+      `obstáculo em s=${o.s.toFixed(0)} está fora da linha de corrida (offset ${o.offset.toFixed(1)})`,
+    );
+  }
+  // Nenhum obstáculo pode prender o kart. Sem o piso de velocidade, frear
+  // alongava o contato e o contato freava mais: medido travando o kart em zero.
+  for (const kind of Object.keys(OBSTACLE_HIT)) {
+    const h = OBSTACLE_HIT[kind],
+      janela = h.r + 1.15;
+    let v = 46,
+      ds = -janela,
+      t = 0;
+    while (ds < janela && t < 3) {
+      if (v > h.floor) v = Math.max(h.floor, v * Math.exp(-h.drag / 60));
+      ds += v / 60;
+      t += 1 / 60;
+    }
+    assert(t < 1, `${kind} prende o kart: ${t.toFixed(2)}s de contato`);
+    assert(v >= h.floor, `${kind} passou do piso de velocidade`);
   }
   // Em nenhum ponto os obstáculos podem fechar a pista: sempre precisa sobrar
   // um corredor bem maior que a largura do kart (~2.5).
@@ -174,11 +233,11 @@ test('obstáculos ficam na pista, deixam passagem e não são armadilha para a C
     cpus.every((p) => p.finished),
     'as CPUs precisam terminar as três voltas mesmo com obstáculos',
   );
-  const total = batidas.slice(1).reduce((a, b) => a + b, 0);
-  assert(
-    total < 21,
-    `CPUs bateram ${total} vezes em 7 corridas — desvio falhou`,
-  );
+  // Com o desvio ajustado por varredura a média fica ~0.9 por corrida. O limite
+  // de 5 dá folga para variação, mas ainda pega o desvio quebrando de novo
+  // (sem ele foram medidas ~14 batidas por corrida).
+  const media = batidas.slice(1).reduce((a, b) => a + b, 0) / 7;
+  assert(media < 5, `CPUs bateram ${media.toFixed(1)}x por corrida — desvio falhou`);
 });
 
 test('circuito ampliado não se cruza e mantém curvas largas', () => {

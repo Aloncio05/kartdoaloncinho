@@ -71,12 +71,30 @@ const wrap = (a) => mod(a + Math.PI, TAU) - Math.PI;
 export const curvatureAt = (s) =>
   wrap(at(s + 10).angle - at(s - 10).angle) / 20;
 // Quanto cada obstáculo custa. Único lugar para ajustar a dureza: 'drag' é o
-// arrasto por segundo enquanto o kart encosta, 'push' é o empurrão lateral.
+// arrasto por segundo enquanto encosta, 'push' é o empurrão lateral e 'floor' é
+// o piso de velocidade.
+// O 'floor' não é enfeite: sem ele o arrasto vira armadilha, porque perder
+// velocidade alonga o contato, que arrasta mais — medido prendendo o kart em
+// zero por mais de 6s. Com piso, a batida custa caro mas o kart sempre sai.
 export const OBSTACLE_HIT = {
-  cone: { r: 1.35, drag: 3.5, push: 3.4 },
-  barrel: { r: 1.75, drag: 9, push: 5.5 },
+  cone: { r: 1.35, drag: 5, push: 3.4, floor: 26 },
+  barrel: { r: 1.75, drag: 10, push: 5.5, floor: 15 },
 };
-export const TRACK_VERSION = 'coast-2.0';
+// Ajuste do piloto CPU. Valores escolhidos por varredura medindo batidas por
+// corrida e tempo de volta — não são chute. Mexer aqui e rodar `npm test`.
+export const AI = {
+  janelaMin: 30,
+  janelaPorVel: 0.7,
+  ganho: 0.095,
+  ganhoDesvio: 0.17,
+  faixas: [-8, -6, -4, -1.5, 0, 1.5, 4, 6, 8],
+  tetoLivre: 6,
+  pesoLinha: 1.2,
+};
+// Subir a versão sempre que obstáculos/pista/física mudarem de lugar: o cliente
+// compara com o snapshot e pede recarga, senão uma aba antiga desenha os
+// obstáculos no lugar errado e o jogador bate no que não vê.
+export const TRACK_VERSION = 'coast-2.1';
 export const TRACK_FEATURES = [
   {
     id: 'turbo-1',
@@ -123,8 +141,13 @@ const BOX_AT = [0.15, 0.4, 0.68, 0.87];
 // Obstáculos estáticos derivados da pista por fórmula determinística (nada de
 // Math.random: servidor e cliente têm que chegar na mesma lista). Por serem
 // constantes, não entram no snapshot e não custam banda.
-// Cone na parte interna da curva pune quem corta; barril alterna de lado na
-// reta e vira slalom. Validado: todos dentro da pista, passagem livre de 16.
+// Cone na parte interna da curva pune quem corta o apex; barril alterna de lado
+// na reta e obriga a costurar.
+// Os offsets ficam DENTRO do corredor onde os karts realmente andam (medido:
+// passam 99,6% do tempo em |offset| < 5). A primeira versão colocava tudo em
+// |offset| 6.8-8.4, colado na grama, e ninguém encostava: era enfeite, não
+// obstáculo. Nunca mais de um obstáculo por ponto da pista, então sobra sempre
+// um corredor largo para desviar.
 export const OBSTACLES = (() => {
   const list = [],
     count = 46;
@@ -136,8 +159,8 @@ export const OBSTACLES = (() => {
     const k = curvatureAt(s);
     list.push(
       Math.abs(k) > 0.007
-        ? { s, offset: -Math.sign(k) * (WIDTH - 3.6), kind: 'cone' }
-        : { s, offset: (i % 2 ? 1 : -1) * (WIDTH - 5.2), kind: 'barrel' },
+        ? { s, offset: -Math.sign(k) * 2.9, kind: 'cone' }
+        : { s, offset: (i % 2 ? 1 : -1) * 3.4, kind: 'barrel' },
     );
   }
   return list;
@@ -169,13 +192,16 @@ export function createRace(difficulty = 'normal') {
       cooldown: 0,
       finished: false,
       finishTime: 0,
+      // Aviso por piloto, não por sala: como campo único da corrida o servidor
+      // mandava o mesmo texto para os 8, então o drift de um piscava na tela
+      // de todos e ninguém via a confirmação do próprio item.
+      notice: '',
+      noticeTime: 0,
     })),
     pickups: [0.15, 0.4, 0.68, 0.87].flatMap((f) =>
       [-6, 0, 6].map((offset) => ({ s: LENGTH * f, offset, cooldown: 0 })),
     ),
     hazards: [],
-    notice: '',
-    noticeTime: 0,
   };
 }
 export function order(r) {
@@ -203,15 +229,15 @@ export function activateItem(r, who = 0) {
       else target.stun = 1.6;
     }
   }
-  if (who === 0) {
-    r.notice = {
-      turbo: 'TURBO!',
-      shield: 'ESCUDO ATIVO',
-      oil: 'ÓLEO NA PISTA',
-      pulse: 'PULSO LANÇADO',
-    }[item];
-    r.noticeTime = 1.8;
-  }
+  // Vale para qualquer assento: online o servidor chama com o índice real, e
+  // com o guard `who === 0` só o primeiro jogador via o aviso do próprio item.
+  p.notice = {
+    turbo: 'TURBO!',
+    shield: 'ESCUDO ATIVO',
+    oil: 'ÓLEO NA PISTA',
+    pulse: 'PULSO LANÇADO',
+  }[item];
+  p.noticeTime = 1.8;
 }
 export function step(r, input, dt) {
   if (r.state === 'countdown') {
@@ -221,7 +247,9 @@ export function step(r, input, dt) {
   }
   if (r.state !== 'racing') return;
   r.time += dt;
-  r.noticeTime = Math.max(0, r.noticeTime - dt);
+  // Fora do laço de pilotos de propósito: lá em baixo ele começa com
+  // `if (p.finished) continue`, e o aviso de quem termina ficaria congelado.
+  for (const p of r.racers) p.noticeTime = Math.max(0, p.noticeTime - dt);
   for (const p of r.pickups) p.cooldown = Math.max(0, p.cooldown - dt);
   for (const h of r.hazards) h.life -= dt;
   r.hazards = r.hazards.filter((h) => h.life > 0);
@@ -238,26 +266,45 @@ export function step(r, input, dt) {
       curvature = wrap(ahead.angle - base.angle) / 8;
     if (!human) {
       let target = Math.sin(r.time * 0.34 + p.id * 2) * 4;
-      // Desvia do obstáculo mais próximo à frente. Só o mais próximo: mirar em
-      // dois ao mesmo tempo fazia o kart oscilar entre os dois e bater nos dois.
-      let near = null,
-        nearDist = Infinity;
+      // Escolhe a faixa mais livre olhando TODOS os obstáculos à frente, não só
+      // o mais próximo: desviar para um ponto fixo jogava o kart exatamente na
+      // faixa do obstáculo seguinte (medido: 15 batidas por corrida).
+      const janela = Math.max(AI.janelaMin, p.speed * AI.janelaPorVel),
+        proximos = [];
       for (const o of OBSTACLES) {
         const d = wrapDistance(o.s - p.s);
-        if (d > 1.5 && d < 26 && d < nearDist) {
-          nearDist = d;
-          near = o;
-        }
+        if (d > 1.5 && d < janela) proximos.push(o);
       }
-      if (near && Math.abs(near.offset - target) < 5)
-        target = near.offset > 0 ? near.offset - 6 : near.offset + 6;
+      if (proximos.length) {
+        let melhor = target,
+          melhorNota = -Infinity;
+        for (const faixa of AI.faixas) {
+          let livre = Infinity;
+          for (const o of proximos)
+            livre = Math.min(
+              livre,
+              Math.abs(faixa - o.offset) - OBSTACLE_HIT[o.kind].r,
+            );
+          // Prêmio por espaço livre, saturado, menos a distância até onde o
+          // piloto queria estar — senão ele abandona a linha por nada.
+          const nota =
+            Math.min(livre, AI.tetoLivre) * 3 -
+            Math.abs(faixa - target) * AI.pesoLinha;
+          if (nota > melhorNota) {
+            melhorNota = nota;
+            melhor = faixa;
+          }
+        }
+        target = melhor;
+      }
+      const ganho = proximos.length ? AI.ganhoDesvio : AI.ganho;
       steer = Math.max(
         -1,
         Math.min(
           1,
           (-curvature * p.speed) / 1.55 +
             p.yaw * 2.2 +
-            (target - p.offset) * 0.095,
+            (target - p.offset) * ganho,
         ),
       );
       throttle = 1;
@@ -306,8 +353,8 @@ export function step(r, input, dt) {
       if (p.drifting && p.drift > 0.65) {
         p.boost = Math.max(p.boost, p.drift > 1.7 ? 2.5 : 1.3);
         if (human) {
-          r.notice = p.drift > 1.7 ? 'SUPER DRIFT!' : 'MINI TURBO!';
-          r.noticeTime = 1.5;
+          p.notice = p.drift > 1.7 ? 'SUPER DRIFT!' : 'MINI TURBO!';
+          p.noticeTime = 1.5;
         }
       }
       p.drifting = false;
@@ -382,8 +429,8 @@ export function step(r, input, dt) {
       }
     }
     // Obstáculos fixos: custam velocidade e um empurrão, nunca stun — stun é só
-    // de item. Arrasto contínuo enquanto encosta, não multiplicação por frame,
-    // que zeraria a velocidade em poucos frames de contato.
+    // de item. O arrasto respeita 'floor' para o contato nunca virar armadilha:
+    // abaixo do piso o kart continua rolando e sai empurrado.
     for (const o of OBSTACLES) {
       const hit = OBSTACLE_HIT[o.kind];
       if (
@@ -391,7 +438,8 @@ export function step(r, input, dt) {
         Math.abs(wrapDistance(p.s - o.s)) < hit.r + 1.15 &&
         Math.abs(p.offset - o.offset) < hit.r + 1.15
       ) {
-        p.speed *= Math.exp(-hit.drag * dt);
+        if (p.speed > hit.floor)
+          p.speed = Math.max(hit.floor, p.speed * Math.exp(-hit.drag * dt));
         p.offset += (p.offset >= o.offset ? 1 : -1) * hit.push * dt;
       }
     }
@@ -405,9 +453,13 @@ export function step(r, input, dt) {
       }
     }
   }
+  // O `length &&` é o que evita encerrar a corrida do nada: `[].every()` é true,
+  // então se todos caírem no mesmo instante a corrida terminaria sozinha e
+  // ninguém retomaria ao reconectar. O timeout continua sendo a saída.
+  const humanos = r.racers.filter((p) => p.human);
   if (
     r.online &&
-    (r.racers.filter((p) => p.human).every((p) => p.finished) || r.time > 420)
+    ((humanos.length && humanos.every((p) => p.finished)) || r.time > 420)
   )
     r.state = 'finished';
   for (let a = 0; a < 8; a++)

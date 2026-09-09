@@ -13,7 +13,7 @@
     "format": "oxfmt",
     "preview": "vite preview --config vite.game.config.js",
     "server": "node server.js",
-    "test": "node --test --test-isolation=none tests/*.test.js"
+    "test": "node --test tests/*.test.js"
   },
   "dependencies": {
     "@base-ui/react": "1.7.0",

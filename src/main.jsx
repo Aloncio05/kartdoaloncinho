@@ -362,7 +362,9 @@ function App() {
       ui = 0,
       sent = 0,
       prevPad = {},
-      prevLap = 0;
+      prevLap = 0,
+      lapNotice = '',
+      lapUntil = 0;
     try {
       world.current = createWorld(canvas.current, race.current);
     } catch {
@@ -509,15 +511,24 @@ function App() {
           drift: p.drift,
           boost: p.boost,
           shield: p.shield,
-          notice: p.air > 0.8 ? 'SALTO!' : r.noticeTime > 0 ? r.notice : '',
+          notice:
+            p.air > 0.8
+              ? 'SALTO!'
+              : now < lapUntil
+                ? lapNotice
+                : p.noticeTime > 0
+                  ? p.notice
+                  : '',
           racers: r.racers,
           localIndex,
           finished: p.finished,
         });
         if (r.state === 'finished') setScreen('results');
-        if (lap > prevLap && prevLap > 0 && !online.current) {
-          r.notice = lap === 3 ? 'ÚLTIMA VOLTA!' : 'VOLTA 2';
-          r.noticeTime = 2;
+        // O aviso de volta vive só no cliente: escrever no objeto da corrida
+        // não funcionava online, porque o snapshot seguinte sobrescrevia.
+        if (lap > prevLap && prevLap > 0) {
+          lapNotice = lap === 3 ? 'ÚLTIMA VOLTA!' : 'VOLTA 2';
+          lapUntil = now + 2000;
         }
         prevLap = lap;
       }
