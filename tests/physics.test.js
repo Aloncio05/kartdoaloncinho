@@ -8,6 +8,13 @@ import {
   LENGTH,
   at,
   order,
+  OBSTACLES,
+  OBSTACLE_HIT,
+  WIDTH,
+  wrapDistance,
+  TRACK_FEATURES,
+  TRACK_VERSION,
+  curvatureAt,
 } from '../src/physics.js';
 function running() {
   const r = createRace();
@@ -117,4 +124,129 @@ test('online race waits for all humans and sorting preserves finish order', () =
   step(r, { 1: { throttle: 1 } }, 1 / 60);
   assert.equal(r.state, 'finished');
   assert.equal(order(r)[0].id, 0);
+});
+test('obstáculos ficam na pista, deixam passagem e não são armadilha para a CPU', () => {
+  assert(OBSTACLES.length > 20, 'a pista precisa ter obstáculos de verdade');
+  for (const o of OBSTACLES) {
+    const raio = OBSTACLE_HIT[o.kind].r;
+    assert(
+      Math.abs(o.offset) + raio < WIDTH,
+      `obstáculo em s=${o.s.toFixed(0)} vaza para fora da pista`,
+    );
+  }
+  // Em nenhum ponto os obstáculos podem fechar a pista: sempre precisa sobrar
+  // um corredor bem maior que a largura do kart (~2.5).
+  for (const o of OBSTACLES) {
+    const perto = OBSTACLES.filter((x) => Math.abs(x.s - o.s) < 8);
+    let melhor = 0,
+      corrente = 0;
+    for (let off = -WIDTH; off <= WIDTH; off += 0.25) {
+      const bloqueado = perto.some(
+        (x) => Math.abs(off - x.offset) < OBSTACLE_HIT[x.kind].r + 1.1,
+      );
+      corrente = bloqueado ? 0 : corrente + 0.25;
+      melhor = Math.max(melhor, corrente);
+    }
+    assert(melhor > 5, `pista quase fechada em s=${o.s.toFixed(0)}`);
+  }
+  // A CPU tem que desviar, não raspar em tudo: sem o desvio seriam ~38 por volta.
+  const r = createRace();
+  r.state = 'racing';
+  r.countdown = 0;
+  const batidas = Array.from({ length: 8 }, () => 0),
+    encostando = Array.from({ length: 8 }, () => false);
+  for (let i = 0; i < 60 * 120; i++) {
+    step(r, { throttle: 0, steer: 0 }, 1 / 60);
+    r.racers.forEach((p, idx) => {
+      const toca = OBSTACLES.some((o) => {
+        const h = OBSTACLE_HIT[o.kind];
+        return (
+          Math.abs(wrapDistance(p.s - o.s)) < h.r + 1.15 &&
+          Math.abs(p.offset - o.offset) < h.r + 1.15
+        );
+      });
+      if (toca && !encostando[idx]) batidas[idx]++;
+      encostando[idx] = toca;
+    });
+  }
+  const cpus = r.racers.slice(1);
+  assert(
+    cpus.every((p) => p.finished),
+    'as CPUs precisam terminar as três voltas mesmo com obstáculos',
+  );
+  const total = batidas.slice(1).reduce((a, b) => a + b, 0);
+  assert(
+    total < 21,
+    `CPUs bateram ${total} vezes em 7 corridas — desvio falhou`,
+  );
+});
+
+test('circuito ampliado não se cruza e mantém curvas largas', () => {
+  assert(LENGTH > 1200);
+  const points = Array.from({ length: 220 }, (_, i) => ({
+    ...at((i / 220) * LENGTH),
+    s: (i / 220) * LENGTH,
+  }));
+  for (const a of points) {
+    assert(
+      Math.abs(curvatureAt(a.s)) * WIDTH < 0.6,
+      'a borda interna não pode dobrar sobre si',
+    );
+    for (const b of points) {
+      if (Math.abs(wrapDistance(a.s - b.s)) < 70) continue;
+      assert(
+        Math.hypot(a.x - b.x, a.z - b.z) > WIDTH * 2 + 7,
+        'trechos independentes precisam manter distância',
+      );
+    }
+  }
+});
+test('faixas de turbo, rampas e aterrissagem usam a mesma física online', () => {
+  const r = running();
+  r.online = true;
+  r.racers.forEach((p, i) => (p.human = i === 0));
+  const p = r.racers[0],
+    boost = TRACK_FEATURES.find((f) => f.kind === 'boost');
+  p.s = boost.s;
+  p.offset = boost.offset;
+  p.speed = 30;
+  step(r, { 0: { throttle: 1 } }, 1 / 60);
+  assert(p.boost >= 1.7);
+  assert(p.featureCooldown > 0);
+  const ramp = TRACK_FEATURES.find((f) => f.kind === 'ramp');
+  p.s = ramp.s + ramp.length / 2 - 1.1;
+  p.offset = ramp.offset;
+  p.yaw = 0;
+  p.speed = 35;
+  p.featureCooldown = 0;
+  p.boost = 0;
+  step(r, { 0: { throttle: 1 } }, 1 / 60);
+  assert(p.air >= 1.35);
+  assert(p.verticalSpeed > 0);
+  let highest = p.air;
+  for (let i = 0; i < 150; i++) {
+    step(r, { 0: { throttle: 1 } }, 1 / 60);
+    highest = Math.max(highest, p.air);
+  }
+  assert(highest > 2);
+  assert.equal(p.air, 0);
+  assert.equal(p.verticalSpeed, 0);
+  assert.equal(r.trackVersion, TRACK_VERSION);
+});
+test('rampa lenta não força salto, turbo fora da faixa não ativa', () => {
+  const r = running(),
+    p = r.racers[0],
+    ramp = TRACK_FEATURES.find((f) => f.kind === 'ramp');
+  p.s = ramp.s;
+  p.offset = ramp.offset;
+  p.speed = 5;
+  step(r, {}, 1 / 60);
+  assert.equal(p.air, 0);
+  assert(p.rampHeight > 0);
+  const boost = TRACK_FEATURES.find((f) => f.kind === 'boost');
+  p.s = boost.s;
+  p.offset = -Math.sign(boost.offset) * 8;
+  p.speed = 35;
+  step(r, { throttle: 1 }, 1 / 60);
+  assert.equal(p.boost, 0);
 });

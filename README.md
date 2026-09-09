@@ -2,6 +2,14 @@
 
 Jogo de kart 3D para navegador, com salas online de até 8 jogadores, três voltas e um circuito original inspirado em corridas arcade.
 
+## Circuito ampliado (versão 0.2)
+
+A Costa do Sol agora tem 1.277 metros por volta (3,83 km por corrida), 32 obstáculos com colisão, duas rampas com salto e aterrissagem e três faixas de turbo. Barris fazem o piloto mudar de trajetória; cones dificultam o corte das curvas. As CPUs procuram uma passagem livre. Obstáculos nunca fecham toda a largura da pista.
+
+O minimapa se adapta ao traçado e indica rampas em amarelo e turbo em azul. As posições das novidades são compartilhadas entre cliente e servidor. Uma verificação de versão solicita recarregar a página se uma aba antiga tentar correr na pista nova.
+
+O endpoint /health informa trackVersion, trackLength, obstacles e features para conferir o deploy. Reiniciar o servidor durante a atualização encerra as salas em andamento.
+
 ## Jogar localmente
 
 Requer Node.js 22.13 ou superior.

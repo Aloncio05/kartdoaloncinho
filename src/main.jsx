@@ -33,6 +33,8 @@ import {
   readPad,
   COLORS,
   TRACK,
+  TRACK_VERSION,
+  TRACK_FEATURES,
   LENGTH,
   at,
 } from './physics.js';
@@ -44,6 +46,27 @@ const ITEM = {
   oil: { name: 'Óleo', icon: Droplets },
   pulse: { name: 'Pulso', icon: Radio },
 };
+// Enquadramento do minimapa medido do próprio traçado, não fixo: mudar a curva
+// em physics.js reajusta o mapa sozinho. Traço e bolinhas escalam com o
+// enquadramento para continuarem com a mesma espessura na tela.
+const MAP = (() => {
+  const pad = 26;
+  const xs = TRACK.map((p) => p.x),
+    zs = TRACK.map((p) => p.z);
+  const x0 = Math.min(...xs) - pad,
+    z0 = Math.min(...zs) - pad,
+    w = Math.max(...xs) - Math.min(...xs) + pad * 2,
+    h = Math.max(...zs) - Math.min(...zs) + pad * 2;
+  const k = Math.max(w, h) / 360;
+  return {
+    viewBox: `${x0} ${z0} ${w} ${h}`,
+    stroke: 14 * k,
+    dot: 5 * k,
+    dotMe: 8 * k,
+    ring: 3 * k,
+    step: Math.max(1, Math.round(TRACK.length / 150)),
+  };
+})();
 const timeText = (t) =>
   `${Math.floor(t / 60)
     .toString()
@@ -213,6 +236,13 @@ function App() {
       setScreen(r.state === 'lobby' ? 'lobby' : 'race');
     });
     s.on('snapshot', (r) => {
+      if (r.trackVersion !== TRACK_VERSION) {
+        s.disconnect();
+        setError(
+          'Uma nova versão da pista está disponível. Recarregue a página para continuar.',
+        );
+        return;
+      }
       latest.current = r;
       const first = !race.current.online;
       if (first) race.current = structuredClone(r);
@@ -453,11 +483,7 @@ function App() {
           rpm = 42 + p.speed * 2.6;
         osc.frequency.setTargetAtTime(rpm, ctx.currentTime, 0.12);
         sub.frequency.setTargetAtTime(rpm * 0.5, ctx.currentTime, 0.12);
-        lp.frequency.setTargetAtTime(
-          260 + p.speed * 14,
-          ctx.currentTime,
-          0.18,
-        );
+        lp.frequency.setTargetAtTime(260 + p.speed * 14, ctx.currentTime, 0.18);
         gain.gain.setTargetAtTime(
           !muted.current && r.state === 'racing' ? 0.05 : 0,
           ctx.currentTime,
@@ -483,7 +509,7 @@ function App() {
           drift: p.drift,
           boost: p.boost,
           shield: p.shield,
-          notice: r.noticeTime > 0 ? r.notice : '',
+          notice: p.air > 0.8 ? 'SALTO!' : r.noticeTime > 0 ? r.notice : '',
           racers: r.racers,
           localIndex,
           finished: p.finished,
@@ -741,13 +767,13 @@ function App() {
             <p className="fine">Chame a turma. A próxima largada é de vocês.</p>
           </section>
           <div className="track-card">
-            <span className="tag">CIRCUITO 01</span>
+            <span className="tag">CIRCUITO AMPLIADO</span>
             <h2>
               Costa do Sol <ArrowUpRight size={21} />
             </h2>
-            <p>Curvas tropicais. Disputas nada tranquilas.</p>
+            <p>32 obstáculos, duas rampas e muito turbo.</p>
             <div>
-              <span>ASFALTO / PRAIA</span>
+              <span>RAMPAS / TURBO</span>
               <span>{Math.round(LENGTH)} M</span>
             </div>
           </div>
@@ -984,21 +1010,31 @@ function App() {
             ))}
           </div>
           <div className="minimap">
-            <svg
-              viewBox="-180 -155 360 300"
-              role="img"
-              aria-label="Mapa do circuito"
-            >
+            <svg viewBox={MAP.viewBox} role="img" aria-label="Mapa do circuito">
               <path
                 d={
-                  TRACK.filter((_, i) => i % 8 === 0)
+                  TRACK.filter((_, i) => i % MAP.step === 0)
                     .map((p, i) => `${i ? 'L' : 'M'}${p.x} ${p.z}`)
                     .join(' ') + 'Z'
                 }
                 fill="none"
                 stroke="rgba(242,244,223,.25)"
-                strokeWidth="14"
+                strokeWidth={MAP.stroke}
               />
+              {TRACK_FEATURES.map((f) => {
+                const t = at(f.s);
+                return (
+                  <rect
+                    key={f.id}
+                    x={t.x - MAP.dot}
+                    y={t.z - MAP.dot}
+                    width={MAP.dot * 2}
+                    height={MAP.dot * 2}
+                    rx={MAP.dot * 0.4}
+                    fill={f.kind === 'boost' ? '#41e5ff' : '#ffd15b'}
+                  />
+                );
+              })}
               {hud.racers.map((p) => {
                 const t = at(p.s);
                 return (
@@ -1006,10 +1042,10 @@ function App() {
                     key={p.id}
                     cx={t.x}
                     cy={t.z}
-                    r={p.id === hud.localIndex ? 8 : 5}
+                    r={p.id === hud.localIndex ? MAP.dotMe : MAP.dot}
                     fill={p.color || COLORS[p.id]}
                     stroke={p.id === hud.localIndex ? 'white' : 'none'}
-                    strokeWidth="3"
+                    strokeWidth={MAP.ring}
                   />
                 );
               })}

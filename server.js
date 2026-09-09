@@ -4,7 +4,16 @@ import { resolve } from 'node:path';
 import { createServer } from 'node:http';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { Server } from 'socket.io';
-import { createRace, step, activateItem, COLORS } from './src/physics.js';
+import {
+  createRace,
+  step,
+  activateItem,
+  COLORS,
+  TRACK_VERSION,
+  LENGTH,
+  OBSTACLES,
+  TRACK_FEATURES,
+} from './src/physics.js';
 
 export function createGameServer({ origins = [], maxRooms = 100 } = {}) {
   // Mesma origem (servidor servindo o próprio front) sempre passa; outras
@@ -31,7 +40,16 @@ export function createGameServer({ origins = [], maxRooms = 100 } = {}) {
     });
   const rooms = new Map(),
     sessions = new Map();
-  app.get('/health', (_, res) => res.json({ ok: true, rooms: rooms.size }));
+  app.get('/health', (_, res) =>
+    res.json({
+      ok: true,
+      rooms: rooms.size,
+      trackVersion: TRACK_VERSION,
+      trackLength: Math.round(LENGTH),
+      obstacles: OBSTACLES.length,
+      features: TRACK_FEATURES.length,
+    }),
+  );
   // Serve o build do Vite quando existir, para um deploy único servir jogo e salas.
   app.use(express.static(resolve(import.meta.dirname, 'dist')));
   function profile(p = {}) {

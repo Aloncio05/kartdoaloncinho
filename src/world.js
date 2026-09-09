@@ -1,5 +1,13 @@
 import * as THREE from 'three';
-import { at, TRACK, LENGTH, WIDTH, COLORS } from './physics.js';
+import {
+  at,
+  TRACK,
+  LENGTH,
+  WIDTH,
+  COLORS,
+  OBSTACLES,
+  TRACK_FEATURES,
+} from './physics.js';
 import {
   material,
   addMesh,
@@ -84,7 +92,7 @@ export function createWorld(canvas, race) {
   roadMat.map = asphalt;
   const floor = addMesh(
     statics,
-    new THREE.CylinderGeometry(360, 370, 4, 96),
+    new THREE.CylinderGeometry(470, 480, 4, 96),
     grass,
     0,
     -2.3,
@@ -185,7 +193,7 @@ export function createWorld(canvas, race) {
   }
   for (let i = 0; i < 16; i++) {
     const t = (i / 16) * Math.PI * 2,
-      r = 245 + rand() * 30,
+      r = 390 + rand() * 40,
       h = 30 + rand() * 65;
     const mountain = addMesh(
       statics,
@@ -355,6 +363,114 @@ export function createWorld(canvas, race) {
         0.13,
         z + 0.75,
       );
+  // Obstáculos fixos: entram no mesh estático fundido, então não custam nada
+  // por frame. As posições vêm de OBSTACLES, a mesma lista que a física usa.
+  for (const o of OBSTACLES) {
+    const t = at(o.s),
+      g = new THREE.Group();
+    g.position.set(t.x + t.nx * o.offset, 0, t.z + t.nz * o.offset);
+    g.rotation.y = t.angle;
+    statics.add(g);
+    if (o.kind === 'cone') {
+      addMesh(g, new THREE.ConeGeometry(1.25, 2.5, 10), red, 0, 1.25, 0);
+      const faixa = addMesh(
+        g,
+        new THREE.CylinderGeometry(0.88, 0.72, 0.42, 10),
+        white,
+        0,
+        1.35,
+        0,
+      );
+      faixa.castShadow = false;
+      box(g, 2.5, 0.16, 2.5, dark, 0, 0.08, 0, 0.05);
+    } else {
+      addMesh(
+        g,
+        new THREE.CylinderGeometry(1.65, 1.65, 3.1, 12),
+        blue,
+        0,
+        1.55,
+        0,
+      );
+      for (const y of [0.85, 2.25]) {
+        const aro = addMesh(
+          g,
+          new THREE.CylinderGeometry(1.72, 1.72, 0.34, 12),
+          cream,
+          0,
+          y,
+          0,
+        );
+        aro.castShadow = false;
+      }
+      addMesh(
+        g,
+        new THREE.CylinderGeometry(1.66, 1.66, 0.16, 12),
+        dark,
+        0,
+        3.13,
+        0,
+      );
+    }
+  }
+  // Ramp and turbo geometry uses the exact dimensions used by the server.
+  const boostSurface = material('#1bd7e5', {
+    emissive: '#087fbb',
+    emissiveIntensity: 0.65,
+    roughness: 0.35,
+  });
+  for (const f of TRACK_FEATURES) {
+    const t = at(f.s),
+      g = new THREE.Group();
+    g.position.set(t.x + t.nx * f.offset, 0.14, t.z + t.nz * f.offset);
+    g.rotation.y = t.angle;
+    statics.add(g);
+    if (f.kind === 'ramp') {
+      const shape = new THREE.Shape();
+      shape.moveTo(-f.length / 2, 0);
+      shape.lineTo(f.length / 2, 0);
+      shape.lineTo(-f.length / 2, 1.35);
+      shape.closePath();
+      const ramp = addMesh(
+        g,
+        new THREE.ExtrudeGeometry(shape, {
+          depth: f.width,
+          bevelEnabled: false,
+          steps: 1,
+        }),
+        red,
+        -f.width / 2,
+        0,
+        0,
+      );
+      ramp.rotation.y = Math.PI / 2;
+      for (const x of [-f.width / 2, f.width / 2]) {
+        const rail = box(g, 0.16, 0.14, f.length, yellow, x, 0.75, 0);
+        rail.rotation.x = -Math.atan(1.35 / f.length);
+      }
+    } else box(g, f.width, 0.06, f.length, boostSurface);
+    for (let j = -1; j <= 1; j++) {
+      const z = j * 1.7;
+      const y =
+        f.kind === 'ramp'
+          ? ((z + f.length / 2) / f.length) * 1.35 + 0.035
+          : 0.05;
+      for (const side of [-1, 1]) {
+        const arrow = box(
+          g,
+          f.width * 0.3,
+          0.04,
+          0.22,
+          white,
+          side * f.width * 0.12,
+          y,
+          z,
+        );
+        arrow.rotation.y = side * 0.55;
+        if (f.kind === 'ramp') arrow.rotation.x = -Math.atan(1.35 / f.length);
+      }
+    }
+  }
   mergeStatic(statics);
   const karts = COLORS.map((c, i) => {
     const k = createKart(c, i);
@@ -438,12 +554,21 @@ export function createWorld(canvas, race) {
           k = karts[i];
         k.root.position.set(
           t.x + t.nx * p.offset,
-          0.04 + Math.sin(time * 18 + i) * 0.018 * (p.speed / 45),
+          0.04 +
+            (p.air || 0) +
+            (p.rampHeight || 0) +
+            Math.sin(time * 18 + i) * 0.018 * (p.speed / 45),
           t.z + t.nz * p.offset,
         );
         k.root.rotation.y =
           t.angle + p.yaw + (p.stun > 0 ? Math.sin(time * 20) * 0.45 : 0);
         k.root.rotation.z = p.yaw * 0.065;
+        k.root.rotation.x =
+          p.air > 0
+            ? Math.max(-0.18, Math.min(0.18, -p.verticalSpeed * 0.018))
+            : p.rampHeight > 0
+              ? -0.16
+              : 0;
         k.animate(p, time);
       });
       pickups.forEach((g, i) => {
@@ -463,7 +588,7 @@ export function createWorld(canvas, race) {
       if (skidTime > 0.04) {
         skidTime = 0;
         for (const p of r.racers)
-          if (p.drifting) {
+          if (p.drifting && p.air < 0.1) {
             const k = karts[p.id].root;
             for (const x of [-1.24, 1.24]) {
               dummy.position.copy(
@@ -488,7 +613,11 @@ export function createWorld(canvas, race) {
       } else {
         const a = t.angle + p.yaw * 0.65;
         target.set(k.x - Math.sin(a) * 8.7, k.y + 4.7, k.z - Math.cos(a) * 8.7);
-        look.set(k.x + Math.sin(a) * 8, 1.25, k.z + Math.cos(a) * 8);
+        look.set(
+          k.x + Math.sin(a) * 8,
+          1.25 + (p.air || 0) * 0.5,
+          k.z + Math.cos(a) * 8,
+        );
       }
       if (!initialized) {
         camera.position.copy(target);
