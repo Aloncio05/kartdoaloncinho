@@ -1,128 +1,96 @@
-        camera.updateProjectionMatrix();
-        lastW = w;
-        lastH = h;
-      }
-      r.racers.forEach((p, i) => {
-        const t = at(p.s),
-          k = karts[i];
-        k.root.position.set(
-          t.x + t.nx * p.offset,
-          0.04 +
-            (p.air || 0) +
-            (p.rampHeight || 0) +
-            Math.sin(time * 18 + i) * 0.018 * (p.speed / 45),
-          t.z + t.nz * p.offset,
-        );
-        k.root.rotation.y =
-          t.angle + p.yaw + (p.stun > 0 ? Math.sin(time * 20) * 0.45 : 0);
-        k.root.rotation.z = p.yaw * 0.065;
-        k.root.rotation.x =
-          p.air > 0
-            ? Math.max(-0.18, Math.min(0.18, -p.verticalSpeed * 0.018))
-            : p.rampHeight > 0
-              ? -0.16
-              : 0;
-        k.animate(p, time);
-      });
-      trailTimer += dt;
-      for (const particle of trail) {
-        if (particle.life <= 0) continue;
-        particle.life -= dt;
-        particle.mesh.visible = particle.life > 0;
-        particle.mesh.position.addScaledVector(particle.velocity, dt);
-        particle.mesh.scale.setScalar(Math.max(0.01, particle.life * 1.8));
-      }
-      if (trailTimer >= 0.045) {
-        trailTimer = 0;
-        for (let i = 0; i < r.racers.length; i++) {
-          const racer = r.racers[i];
-          if (racer.boost <= 0 && !racer.drifting) continue;
-          const kart = karts[i].root;
-          const particle = trail[trailCursor++ % trail.length];
-          const side = (trailCursor % 2 ? 1 : -1) * 0.9;
-          particle.mesh.position.copy(kart.localToWorld(new THREE.Vector3(side, 0.5, -2)));
-          particle.velocity.set((Math.random() - 0.5) * 2, 1.1 + Math.random(), (Math.random() - 0.5) * 2);
-          particle.life = 0.45;
-          particle.mesh.visible = true;
-        }
-      }
-      pickups.forEach((g, i) => {
-        g.visible = r.pickups[i].cooldown <= 0;
-        g.rotation.y = time;
-        g.position.y = 1.65 + Math.sin(time * 2 + i) * 0.18;
-      });
-      hazards.forEach((g, i) => {
-        const h = r.hazards[i];
-        g.visible = !!h;
-        if (h) {
-          const p = at(h.s);
-          g.position.set(p.x + p.nx * h.offset, 0.14, p.z + p.nz * h.offset);
-        }
-      });
-      skidTime += dt;
-      if (skidTime > 0.04) {
-        skidTime = 0;
-        for (const p of r.racers)
-          if (p.drifting && p.air < 0.1) {
-            const k = karts[p.id].root;
-            for (const x of [-1.24, 1.24]) {
-              dummy.position.copy(
-                k.localToWorld(new THREE.Vector3(x, 0.105, -1)),
-              );
-              dummy.position.y = 0.135;
-              dummy.rotation.set(-Math.PI / 2, 0, -k.rotation.y);
-              dummy.scale.set(1, 1, 1);
-              dummy.updateMatrix();
-              skids.setMatrixAt(skidIndex++ % 400, dummy.matrix);
-            }
-          }
-        skids.instanceMatrix.needsUpdate = true;
-      }
-      const p = r.racers[localIndex],
-        t = at(p.s),
-        k = karts[localIndex].root.position;
-      if (r.state === 'menu') {
-        const base = at(-16);
-        target.set(base.x - base.nx * 10, 5.3, base.z - base.nz * 10);
-        look.set(start.x, 1.3, start.z);
-      } else {
-        const a = t.angle + p.yaw * 0.65;
-        target.set(k.x - Math.sin(a) * 8.7, k.y + 4.7, k.z - Math.cos(a) * 8.7);
-        look.set(
-          k.x + Math.sin(a) * 8,
-          1.25 + (p.air || 0) * 0.5,
-          k.z + Math.cos(a) * 8,
-        );
-      }
-      if (!initialized) {
-        camera.position.copy(target);
-        smoothLook.copy(look);
-        initialized = true;
-      } else {
-        camera.position.lerp(target, 1 - Math.exp(-dt * 8));
-        smoothLook.lerp(look, 1 - Math.exp(-dt * 12));
-      }
-      camera.lookAt(smoothLook);
-      sun.position.set(k.x - 70, 130, k.z - 70);
-      sun.target.position.set(k.x, 0, k.z);
-      const fov = 58 + Math.min(5, Math.max(0, p.speed) / 10) + (p.boost > 0 ? 7 : 0);
-      camera.fov += (fov - camera.fov) * Math.min(1, dt * 5);
-      camera.updateProjectionMatrix();
-      renderer.render(scene, camera);
-    },
-    dispose() {
-      const geos = new Set(),
-        mats = new Set(),
-        textures = new Set();
-      scene.traverse((o) => {
-        if (o.geometry) geos.add(o.geometry);
-        for (const m of o.material
-          ? Array.isArray(o.material)
-            ? o.material
-            : [o.material]
-          : []) {
-          mats.add(m);
-          if (m.map) textures.add(m.map);
-        }
-      });
-      geos.forEach((g) => g.dispose());
+import * as THREE from 'three';
+import {
+  at,
+  TRACK,
+  LENGTH,
+  WIDTH,
+  COLORS,
+  OBSTACLES,
+  TRACK_FEATURES,
+} from './physics.js';
+import {
+  material,
+  addMesh,
+  box,
+  mergeStatic,
+  createKart,
+  labelTexture,
+} from './models.js';
+export function createWorld(canvas, race) {
+  const renderer = new THREE.WebGLRenderer({
+    canvas,
+    antialias: true,
+    powerPreference: 'high-performance',
+  });
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 1.6));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.35;
+  renderer.setClearColor('#6cbbed');
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.Fog('#9ad4ea', 190, 490);
+  const camera = new THREE.PerspectiveCamera(58, 1, 0.1, 900);
+  scene.add(new THREE.HemisphereLight('#ddf4ff', '#778345', 2.15));
+  const sun = new THREE.DirectionalLight('#fff2d1', 3.4);
+  sun.position.set(-100, 190, -70);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(2048, 2048);
+  Object.assign(sun.shadow.camera, {
+    left: -110,
+    right: 110,
+    top: 110,
+    bottom: -110,
+    near: 1,
+    far: 410,
+  });
+  sun.shadow.bias = -0.0005;
+  sun.shadow.normalBias = 0.035;
+  scene.add(sun);
+  scene.add(sun.target);
+  const statics = new THREE.Group();
+  scene.add(statics);
+  const roadMat = material('#3c4053', { roughness: 0.95 }),
+    grass = material('#79bd36', { flatShading: true }),
+    grassTop = material('#93d438', { flatShading: true }),
+    orangeRock = material('#c67839', { flatShading: true }),
+    rockLight = material('#e8a554', { flatShading: true }),
+    bark = material('#655039', { flatShading: true }),
+    leaf = material('#63ab2b', { flatShading: true }),
+    leafLight = material('#8ecb35', { flatShading: true }),
+    cream = material('#fff3bd'),
+    red = material('#fb6c40'),
+    dark = material('#273743'),
+    yellow = material('#f7da34'),
+    white = material('#fffbea'),
+    sand = material('#e8c67e'),
+    blue = material('#3b93ce');
+  let seed = 37;
+  const rand = () => {
+    seed = (seed * 1664525 + 1013904223) >>> 0;
+    return seed / 4294967296;
+  };
+  // Fine road aggregate is a repeatable procedural game texture, not an external asset.
+  const texCanvas = document.createElement('canvas');
+  texCanvas.width = texCanvas.height = 128;
+  const ctx = texCanvas.getContext('2d'),
+    data = ctx.createImageData(128, 128);
+  for (let i = 0; i < data.data.length; i += 4) {
+    const n = 155 + rand() * 38;
+    data.data[i] = n;
+    data.data[i + 1] = n;
+    data.data[i + 2] = n;
+    data.data[i + 3] = 255;
+  }
+  ctx.putImageData(data, 0, 0);
+  const asphalt = new THREE.CanvasTexture(texCanvas);
+  asphalt.wrapS = asphalt.wrapT = THREE.RepeatWrapping;
+  asphalt.repeat.set(3, 130);
+  asphalt.colorSpace = THREE.SRGBColorSpace;
+  asphalt.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  roadMat.map = asphalt;
+  const floor = addMesh(
+    statics,
+    new THREE.CylinderGeometry(470, 480, 4, 96),
+    grass,
